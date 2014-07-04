@@ -18,6 +18,7 @@ before_install:
 
 install:
   - sudo luarocks install lua-llthreads2
+  - sudo luarocks install luasocket
 
   - if [ $LUA = "luajit" ]; then
       sudo luarocks install ljsyscall 0.9;
