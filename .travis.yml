@@ -29,7 +29,7 @@ install:
       sudo luarocks install lzmq;
     fi
 
-  - sudo luarocks make rockspecs/lzmq-beacon-scm-0.rocks
+  - sudo luarocks make rockspecs/lzmq-beacon-scm-0.rockspec
 
 script:
   - cd test
