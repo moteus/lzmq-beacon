@@ -421,6 +421,10 @@ local function zbeacon_test(verbose)
     assert(poller:poll(100))
   end
 
+  node1:destroy()
+  node2:destroy()
+  node3:destroy()
+
   printf("OK\n")
   return true
 end
