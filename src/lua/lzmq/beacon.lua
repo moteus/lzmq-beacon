@@ -80,6 +80,8 @@ local interval
 local transmit
 local refrash
 
+pipe:set_linger(100)
+
 local function log(...)
   if verbose then
     print(string.format(...))
@@ -153,17 +155,18 @@ end
 
 local function on_beacon(msg, host, port)
   if not filter then
-    return
+    return true
   end
+
   if filter ~= msg:sub(1, #filter) then
-    return
+    return true
   end
 
   if noecho and (transmit == msg) then
-    return
+    return true
   end
 
-  pipe:sendx(host, msg)
+  return pipe:sendx(host, msg)
 end
 
 refrash = function()
@@ -195,7 +198,10 @@ refrash = function()
           log("E: recv error %s from %s:%s", tostring(host))
         else
           log("I: recv %s from %s:%s", msg, tostring(host), tostring(port))
-          on_beacon(msg, tostring(host), tostring(port))
+          local ok, err = on_beacon(msg, tostring(host), tostring(port))
+          if not ok then
+            loop:interrup()
+          end
         end
       end)
       if ok then
@@ -207,6 +213,10 @@ refrash = function()
         sock:destroy()
       end
     end
+  end
+
+  if #sock_address == 0 then
+    sock_address[1] = '@'
   end
 
   local unpack = unpack or table.unpack
@@ -230,6 +240,13 @@ log("I: Started")
 
 loop:start()
 
+for _, sock in ipairs(socks) do
+  loop:remove_socket(sock:fd())
+  sock:destroy()
+end
+
+loop:destroy()
+
 end
 
 local zth = require "lzmq.threads"
@@ -239,7 +256,7 @@ zbeacon.__index = zbeacon
 
 function zbeacon:new(...)
   local actor = zth.xactor(zbeacon_thread, ...)
-  local ok,err = actor:start()
+  local ok, err = actor:start()
   if not ok then return nil, err end
 
   local o = setmetatable({}, self)
@@ -268,8 +285,13 @@ function zbeacon:refrash(val)
   else actor:sendx("REFRASH") end
 
   local addresses = {actor:recvx()}
-  if (not addresses[1]) and addresses[2] then
+  if not addresses[1] then
    return nil, addresses[2]
+  end
+
+  if addresses[1] == '@' then
+    assert(addresses[2] == nil)
+    addresses[1] = nil;
   end
 
   self._private.addresses = addresses
