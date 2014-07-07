@@ -19,16 +19,12 @@ function setup()
 end
 
 function teardown()
-  print()
-  print("teardoun", node1._private.actor:socket())
-  print(node1._private.actor:send("TERMINATE1"))
-  
   if node1 then node1:destroy() end
   if node2 then node2:destroy() end
   if node3 then node3:destroy() end
   if ctx   then ctx:destroy()   end
 
-  -- ctx, node1, node2, node3 = nil
+  ctx, node1, node2, node3 = nil
 end
 
 function test_basic()
