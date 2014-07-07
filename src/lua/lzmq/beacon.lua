@@ -255,7 +255,15 @@ local zbeacon = {} do
 zbeacon.__index = zbeacon
 
 function zbeacon:new(...)
-  local actor = zth.xactor(zbeacon_thread, ...)
+  local ct = type((...))
+  local has_ctx = not ((ct == "string") or (ct == "number"))
+  local actor
+  if has_ctx then
+    actor = zth.actor((...), zbeacon_thread, select(2, ...))
+  else
+    actor = zth.xactor(zbeacon_thread, ...)
+  end
+
   local ok, err = actor:start()
   if not ok then return nil, err end
 
@@ -343,6 +351,7 @@ function zbeacon:destroy()
   if actor then
     actor:sendx("TERMINATE")
     actor:join()
+    self._private.actor = nil
   end
 end
 
@@ -453,5 +462,5 @@ end
 
 return {
   new      = function(...) return zbeacon:new(...) end;
-  selftest = zbeacon_test;
+  -- selftest = zbeacon_test;
 }

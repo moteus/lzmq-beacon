@@ -17,6 +17,7 @@ before_install:
   - bash .travis/setup_zmq.sh
 
 install:
+  - sudo luarocks install lunitx
   - sudo luarocks install lua-llthreads2
   - sudo luarocks install luasocket
 
@@ -34,7 +35,7 @@ install:
 
 script:
   - cd test
-  - lua test_beacon.lua
+  - lunit.sh test_beacon.lua
 
 
 notifications:
