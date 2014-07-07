@@ -95,8 +95,41 @@ end
 
 end
 
+local _ENV = TEST_CASE "lzmq.beacon.global_context" do
+-- We use global zmq context
+
+local node1, node2
+
+function setup()
+end
+
+function teardown()
+  if node1 then node1:destroy() end
+  if node2 then node2:destroy() end
+
+  node1, node2, node3 = nil
+end
+
+function test_basic()
+  local port_nbr     = 0x1234
+  local announcement = string.format("%.4X", port_nbr)
+
+  -- Create beacon to broadcast our service
+  node1 = assert(zbn.new(BEACON_PORT))
+  assert_equal(node1, node1:interval(100))
+  assert_equal(node1, node1:publish(announcement))
+
+  -- Create beacon to lookup service
+  node2 = assert(zbn.new(BEACON_PORT))
+  assert_equal(node2, node2:subscribe())
+
+  -- Wait for at most 1/2 second if there's no broadcast networking
+  node2:socket():set_rcvtimeo(500)
+
+  local ipaddress, content = assert_string(node2:recv())
+  assert_equal(announcement, content)
+end
+
+end
 
 if not HAS_RUNNER then lunit.run() end
-
-
-
