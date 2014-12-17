@@ -1,17 +1,106 @@
 local function zbeacon_thread(pipe, host_or_port, port)
-local host
-if port then host = host_or_port
-else port = host_or_port end
+local host, interface
+
+local ID = string.format("%.8X", pipe:fd())
+
+local verbose  = false
+
+local function log(...)
+  if verbose then
+    print("[" .. ID .. "] " .. string.format(...))
+  end
+end
+
+if port then host = host_or_port else host, port = "*", host_or_port end
+
+local function prequire(mod)
+  local ok, m = pcall(require, mod)
+  if not ok then return nil, m end
+  return m, mod
+end
 
 local zlp    = require "lzmq.loop"
 local socket = require "socket"
 
+local get_address do
+  local uv  = prequire "lluv"
+  local bit = prequire "bit32" or prequire "bit"
+
+  local MASKS = {[ 0 ] = 0;[128] = 1;[192] = 2;[224] = 3;
+    [240] = 4;[248] = 5;[252] = 6;[254] = 7;[255] = 8}
+  local bcast if bit then
+    bcast = function(net, mask)
+      if net == "*" or net == "0.0.0.0" then
+        return "255.255.255.255"
+      end
+
+      local n = tonumber(mask:match("^%d+%.%d+%.%d+%.(%d+)$"))
+      local a = tonumber(net:match("^%d+%.%d+%.%d+%.(%d+)$"))
+      n = assert(MASKS[n], "Invalid subnet mask:" .. mask)
+      local m = 8 - n
+      local d = 2^m
+
+      local bcast = bit.bor(a, d-1)
+      local gate  = bit.band(a, bit.bnot(d-1))
+
+      return
+      (net:gsub("^(%d+%.%d+%.%d+%.)(%d+)$", "%1" .. bcast)),
+      (net:gsub("^(%d+%.%d+%.%d+%.)(%d+)$", "%1" .. gate))
+    end
+  else
+    bcast = function() return "255.255.255.255" end
+  end
+
+  local get_address_
+  if uv then
+    get_address_ = function (name)
+      local function check_int(int)
+        if name                 then return int.name == name end
+        if int.internal         then return false end
+        if int.family ~= "inet" then return false end
+        return true
+      end
+
+      if verbose then
+        log("I: enum interface:")
+        for _, int in ipairs(uv.interface_addresses())do
+          log("-- interface %s %s/%s (%s) %s - %s",
+            int.name, int.address, int.netmask, int.family,
+            int.internal and "internal" or "external",
+            check_int(int) and "match" or "not match"
+          )
+        end
+      end
+
+      if name == "*" then return "*", bcast("*") end
+
+      for _, int in ipairs(uv.interface_addresses())do
+        if check_int(int) then
+          return int.address, bcast(int.address, int.netmask)
+        end
+      end
+    end
+  elseif socket.dns.local_addresses then
+    get_address_ = function()
+      local a = socket.dns.local_addresses()[1] or "*"
+      return a, "255.255.255.255"
+    end
+  else
+    get_address_ = function()
+      return "*", "255.255.255.255"
+    end
+  end
+
+  get_address = function() return get_address_(interface) end
+end
+
 local Udp = {} do
 Udp.__index = Udp
 
-function Udp:new(host, port)
+function Udp:new(host, port, broadcast)
   assert(type(host) == 'string')
   assert(type(port) == 'number')
+  broadcast = broadcast or "255.255.255.255"
 
   local cnn, err = socket.udp()
   if not cnn then return nil, err end
@@ -28,7 +117,7 @@ function Udp:new(host, port)
 
   local o = setmetatable({}, self)
   o._private = {
-    broadcast = "255.255.255.255";
+    broadcast = broadcast;
     host      = host;
     port      = port;
     cnn       = cnn;
@@ -54,6 +143,10 @@ function Udp:port()
    return self._private.port
 end
 
+function Udp:bcast()
+   return self._private.broadcast
+end
+
 function Udp:send(buffer)
   return self._private.cnn:sendto(buffer, self._private.broadcast, self._private.port)
 end
@@ -73,20 +166,13 @@ end
 end
 
 local loop     = zlp.new()
-local verbose  = false
 local socks    = {}
 local noecho   = false
 local interval
 local transmit
-local refrash
+local refresh
 
 pipe:set_linger(100)
-
-local function log(...)
-  if verbose then
-    print(string.format(...))
-  end
-end
 
 local api = {} do
 
@@ -100,8 +186,11 @@ function api.interval(skt, val)
   return OK
 end
 
-function api.refrash(skt)
-  refrash(skt)
+function api.refresh(skt, val)
+  if val then
+    host, interface = val
+  end
+  refresh(skt)
   return OK
 end
 
@@ -124,11 +213,13 @@ function api.silence(skt)
 end
 
 function api.subscribe(skt, val)
+  log("I: subscribe %s", val)
   filter = val
   return OK
 end
 
 function api.unsubscribe(skt)
+  log("I: unsubscribe")
   filter = nil
   return OK
 end
@@ -155,10 +246,12 @@ end
 
 local function on_beacon(msg, host, port)
   if not filter then
+    log("I: filterout `%s` by any filter", msg)
     return true
   end
 
   if filter ~= msg:sub(1, #filter) then
+    log("I: filterout `%s` by `%s`", msg, filter)
     return true
   end
 
@@ -169,7 +262,13 @@ local function on_beacon(msg, host, port)
   return pipe:sendx(host, msg)
 end
 
-refrash = function()
+refresh = function()
+
+  if host then
+    if not host:find("^%d+%.%d+%.%d+%.%d+$") then
+      interface, host = host
+    end
+  end
 
   for _, sock in ipairs(socks) do
     loop:remove_socket(sock:fd())
@@ -177,18 +276,14 @@ refrash = function()
   end
   socks = {}
 
-  local addresses = {host}
+  local host, bcast = assert(get_address())
 
-  if (not host) and socket.dns.local_addresses then
-    addresses = socket.dns.local_addresses()
-  end
-
-  if #addresses == 0 then addresses[1] = "*" end
+  local addresses = {{ip=host, bcast=bcast}}
 
   local sock_address = {}
 
   for _, host in ipairs(addresses) do
-    local sock, err = Udp:new(host, port)
+    local sock, err = Udp:new(host.ip, port, host.bcast)
     if not sock then
       log("E: can not bind on %s. Error: %s", host, tostring(err))
     else
@@ -205,7 +300,7 @@ refrash = function()
         end
       end)
       if ok then
-        log("I: bind on %s:%s", tostring(sock:host()), tostring(sock:port()))
+        log("I: bind on %s:%s (%s)", tostring(sock:host()), tostring(sock:port()), tostring(sock:bcast()))
         socks[#socks + 1] = sock
         sock_address[#sock_address + 1] = sock:host()
       else
@@ -225,7 +320,10 @@ end
 
 loop:add_socket(pipe, function(skt)
   local ok, err = api._dispatch(skt, skt:recvx())
-  if not ok then return loop:interrupt() end
+  if not ok then
+    log("E: pipe poll error: %s", tostring(err))
+    return loop:interrupt()
+  end
 end)
 
 interval = loop:add_interval(5000, function()
@@ -272,7 +370,7 @@ function zbeacon:new(...)
     actor     = actor;
   }
 
-  local ok, err = o:refrash()
+  local ok, err = o:refresh()
   if not ok then
     o:destroy()
     return nil, err
@@ -287,10 +385,10 @@ function zbeacon:verbose(val)
   return self
 end
 
-function zbeacon:refrash(val)
+function zbeacon:refresh(val)
   local actor = self._private.actor
-  if val then actor:sendx("REFRASH", val)
-  else actor:sendx("REFRASH") end
+  if val then actor:sendx("REFRESH", val)
+  else actor:sendx("REFRESH") end
 
   local addresses = {actor:recvx()}
   if not addresses[1] then
@@ -461,6 +559,6 @@ local function zbeacon_test(verbose)
 end
 
 return {
-  new      = function(...) return zbeacon:new(...) end;
-  -- selftest = zbeacon_test;
+  new        = function(...) return zbeacon:new(...) end;
+  self_check = zbeacon_test;
 }

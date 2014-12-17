@@ -2,7 +2,7 @@ language: c
 
 env:
   global:
-    - LUAROCKS=2.2.0beta1
+    - LUAROCKS=2.2.0
   matrix:
     - LUA=lua5.1 ZMQ_VER=zeromq3
     - LUA=lua5.2 ZMQ_VER=zeromq3
@@ -15,11 +15,17 @@ branches:
 before_install:
   - bash .travis/setup_lua.sh
   - bash .travis/setup_zmq.sh
+  - bash .travis/setup_uv.sh
 
 install:
   - sudo luarocks install lunitx
   - sudo luarocks install lua-llthreads2
   - sudo luarocks install luasocket
+  - sudo luarocks install lluv UV_DIR=$TRAVIS_BUILD_DIR/libuv --from=https://rocks.moonscript.org/dev
+
+  - if [ $LUA = "lua5.1" ]; then
+      sudo luarocks install bit32;
+    fi
 
   - if [ $LUA = "luajit" ]; then
       sudo luarocks install ljsyscall 0.9;
@@ -35,8 +41,8 @@ install:
 
 script:
   - cd test
+  - lua -e"require'lzmq.beacon'.self_check()"
   - lunit.sh test_beacon.lua
-
 
 notifications:
   email:
